@@ -33,6 +33,8 @@ set(MX_Application_Src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../startup_stm32f103xb.s
     ${CMAKE_CURRENT_SOURCE_DIR}/../../APP/app_tasks.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../BSP/bsp_pwm.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../BSP/bsp_uart.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../APP/app_protocol.c
 )
 
 # STM32 HAL/LL Drivers

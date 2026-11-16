@@ -18,15 +18,17 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "cmsis_os.h"
-
-/* Private includes ----------------------------------------------------------*/
-/* USER CODE BEGIN Includes */
-#include "../../APP/app_tasks.h"
-#include "../../BSP/bsp_pwm.h"
+#include "cmsis_os2.h"
 #include "stm32f1xx_hal_def.h"
 #include "stm32f1xx_hal_gpio.h"
 #include <string.h>
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include "app_tasks.h"
+#include "bsp_pwm.h"
+#include "app_protocol.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -69,7 +71,7 @@ const osThreadAttr_t ControlTask_attributes = {
 osThreadId_t UartTaskHandle;
 const osThreadAttr_t UartTask_attributes = {
   .name = "UartTask",
-  .stack_size = 512,
+  .stack_size = 1024,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for KeyTask */
@@ -77,7 +79,7 @@ osThreadId_t KeyTaskHandle;
 const osThreadAttr_t KeyTask_attributes = {
   .name = "KeyTask",
   .stack_size = 256,
-  .priority = (osPriority_t) osPriorityLow,
+  .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for MonitorTask */
 osThreadId_t MonitorTaskHandle;
@@ -179,9 +181,20 @@ int main(void)
       sizeof(SensorData_t),
       NULL
   );
-
+  
   /* 检查消息队列是否创建成功 */
   if (SensorQueueHandle == NULL)
+  {
+      Error_Handler();
+  }
+  /* 创建串口命令消息队列 */
+  CommandQueueHandle = osMessageQueueNew(
+      8,
+      sizeof(AppCommand_t),
+      NULL
+  );
+  /* 检查命令队列是否创建成功 */
+  if (CommandQueueHandle == NULL)
   {
       Error_Handler();
   }
@@ -204,6 +217,9 @@ int main(void)
   /* creation of MonitorTask */
   MonitorTaskHandle = osThreadNew(Monitor_Task, NULL, &MonitorTask_attributes);
 
+  if(MonitorTaskHandle == NULL){
+    HAL_GPIO_WritePin(LED_RUN_GPIO_Port, LED_RUN_Pin, GPIO_PIN_SET);
+  }
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
@@ -529,6 +545,7 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
+  HAL_GPIO_WritePin(LED_RUN_GPIO_Port, LED_RUN_Pin, GPIO_PIN_SET);
   __disable_irq();
   while (1)
   {

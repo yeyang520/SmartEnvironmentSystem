@@ -4,7 +4,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "../BSP/bsp_pwm.h"
+#include "bsp_pwm.h"
+#include "bsp_uart.h"
+#include "app_protocol.h"
 
 /* 任务运行计数器 */
 volatile uint32_t sensor_count = 0;
@@ -20,8 +22,20 @@ volatile uint8_t alarm_state = 0;
 
 volatile ControlMode_t system_mode = MODE_AUTO;
 
+/* 完整命令接收计数 */
+volatile uint32_t uart_command_count = 0;
+
+/* 超长命令计数 */
+volatile uint32_t uart_command_error_count = 0;
+
 // uart1
 extern UART_HandleTypeDef huart1;
+
+volatile AppCommandType_t latest_command_type = CMD_NONE;
+volatile uint32_t latest_command_value = 0;
+
+volatile uint16_t alarm_on_threshold = 3000;
+volatile uint16_t alarm_off_threshold = 2900;
 
 /* Sensor Task */
 void App_SensorTask(void *argument)
@@ -63,20 +77,68 @@ void App_SensorTask(void *argument)
 }
 
 /* Control Task */
+
 void App_ControlTask(void *argument)
 {
     SensorData_t received_data;
+    AppCommand_t received_command;
 
     uint16_t adc;
     uint16_t pwm_duty;
 
     for (;;)
     {
+        /* =================================
+           1. 检查串口命令队列
+           ================================= */
+
+        while (osMessageQueueGet(
+                   CommandQueueHandle,
+                   &received_command,
+                   NULL,
+                   0
+               ) == osOK)
+        {
+            switch (received_command.type)
+            {
+                case CMD_SET_MODE:
+
+                    if (received_command.value <= MODE_MANUAL_OFF)
+                    {
+                        system_mode =
+                            (ControlMode_t)received_command.value;
+                    }
+
+                    break;
+
+                case CMD_SET_ALARM:
+
+                    if (received_command.value >= 100 &&
+                        received_command.value <= 4095)
+                    {
+                        alarm_on_threshold =
+                            (uint16_t)received_command.value;
+
+                        alarm_off_threshold =
+                            (uint16_t)(received_command.value - 100);
+                    }
+
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
+        /* =================================
+           2. 等待传感器数据
+           ================================= */
+
         osStatus_t status = osMessageQueueGet(
             SensorQueueHandle,
             &received_data,
             NULL,
-            osWaitForever
+            10
         );
 
         if (status == osOK)
@@ -87,7 +149,7 @@ void App_ControlTask(void *argument)
 
             control_count++;
 
-            // 根据当前工作模式选择PWM
+            /* 根据模式选择PWM */
             switch (system_mode)
             {
                 case MODE_AUTO:
@@ -116,15 +178,15 @@ void App_ControlTask(void *argument)
                     break;
             }
 
-            // 更新PWM
+            /* 更新PWM */
             BSP_PWM_SetDuty(pwm_duty);
 
             latest_pwm_duty = pwm_duty;
 
-            // 报警功能独立于工作模式
+            /* 滞回报警 */
             if (alarm_state == 0)
             {
-                if (adc >= 3000)
+                if (adc >= alarm_on_threshold)
                 {
                     alarm_state = 1;
 
@@ -137,7 +199,7 @@ void App_ControlTask(void *argument)
             }
             else
             {
-                if (adc <= 2900)
+                if (adc <= alarm_off_threshold)
                 {
                     alarm_state = 0;
 
@@ -153,13 +215,175 @@ void App_ControlTask(void *argument)
 }
 
 /* UART Task */
+
 void App_UartTask(void *argument)
 {
+    uint8_t rx_data[32];
+
+    char command[APP_COMMAND_MAX_LEN];
+
+    AppCommand_t parsed_command;
+
+    /* 启动DMA */
+    HAL_StatusTypeDef status = BSP_UART_StartReceive();
+
+    if (status != HAL_OK)
+    {
+        for (;;)
+        {
+            osDelay(1000);
+        }
+    }
+
+    AppProtocol_Init();
+
     for (;;)
     {
-        uart_count++;
+        /* DMA数据提取 */
+        BSP_UART_PollReceive();
 
-        osDelay(1000);
+        /* 读取软件环形缓冲区 */
+        uint16_t len = BSP_UART_Read(
+            rx_data,
+            sizeof(rx_data)
+        );
+
+        if (len > 0)
+        {
+            uart_count += len;
+            for (uint16_t i = 0; i < len; i++)
+            {
+                AppProtocolResult_t state;
+
+                state = AppProtocol_FeedByte(
+                    rx_data[i],
+                    command,
+                    sizeof(command)
+                );
+
+                /* 收到完整命令 */
+                if (state == APP_PROTOCOL_READY)
+                {
+                    if (AppProtocol_ParseCommand(command, &parsed_command))
+                    {
+                        if (parsed_command.type == CMD_SET_MODE ||
+                            parsed_command.type == CMD_SET_ALARM)
+                        {
+                            /* 报警开启阈值至少为100 */
+                            if (parsed_command.type == CMD_SET_ALARM &&
+                                parsed_command.value < 100)
+                            {
+                                const char reply[] =
+                                    "ERR: ALARM RANGE 100-4095\r\n";
+
+                                HAL_UART_Transmit(
+                                    &huart1,
+                                    (uint8_t *)reply,
+                                    sizeof(reply) - 1,
+                                    500
+                                );
+                            }
+                            else
+                            {
+                                /* 将命令放入消息队列 */
+                                osStatus_t queue_status = osMessageQueuePut(
+                                    CommandQueueHandle,
+                                    &parsed_command,
+                                    0,
+                                    0
+                                );
+
+                                if (queue_status == osOK)
+                                {
+                                    uart_command_count++;
+
+                                    const char reply[] =
+                                        "OK: COMMAND QUEUED\r\n";
+
+                                    HAL_UART_Transmit(
+                                        &huart1,
+                                        (uint8_t *)reply,
+                                        sizeof(reply) - 1,
+                                        500
+                                    );
+                                }
+                                else
+                                {
+                                    const char reply[] =
+                                        "ERR: COMMAND QUEUE FULL\r\n";
+
+                                    HAL_UART_Transmit(
+                                        &huart1,
+                                        (uint8_t *)reply,
+                                        sizeof(reply) - 1,
+                                        500
+                                    );
+                                }
+                            }
+                        }
+                        else if (parsed_command.type == CMD_STATUS)
+                        {
+                            char reply[160];
+
+                            int reply_len = snprintf(
+                                reply,
+                                sizeof(reply),
+                                "ADC:%u PWM:%u MODE:%d ALARM:%u\r\n",
+                                (unsigned int)latest_adc_value,
+                                (unsigned int)latest_pwm_duty,
+                                (int)system_mode,
+                                (unsigned int)alarm_state
+                            );
+
+                            if (reply_len > 0 && reply_len < sizeof(reply))
+                            {
+                                HAL_UART_Transmit(
+                                    &huart1,
+                                    (uint8_t *)reply,
+                                    (uint16_t)reply_len,
+                                    500
+                                );
+                            }
+                        }
+                        else if (parsed_command.type == CMD_HELP)
+                        {
+                            const char reply[] =
+                                "MODE AUTO\r\n"
+                                "MODE MANUAL_ON\r\n"
+                                "MODE MANUAL_OFF\r\n"
+                                "SET ALARM 3200\r\n"
+                                "STATUS\r\n"
+                                "HELP\r\n";
+
+                            HAL_UART_Transmit(
+                                &huart1,
+                                (uint8_t *)reply,
+                                sizeof(reply) - 1,
+                                500
+                            );
+                        }
+                    }
+                    else
+                    {
+                        uart_command_error_count++;
+
+                        const char reply[] = "UNKNOWN COMMAND\r\n";
+
+                        HAL_UART_Transmit(
+                            &huart1,
+                            (uint8_t *)reply,
+                            sizeof(reply) - 1,
+                            500
+                        );
+                    }
+                }
+                else if (state == APP_PROTOCOL_TOO_LONG)
+                {
+                    uart_command_error_count++;
+                }
+            }
+        }
+        osDelay(5);
     }
 }
 
@@ -225,52 +449,10 @@ void App_KeyTask(void *argument)
 /* Monitor Task */
 void App_MonitorTask(void *argument)
 {
-    char buffer[120];
-
-    const char *mode_name;
 
     for (;;)
     {
         monitor_count++;
-
-        switch (system_mode)
-        {
-            case MODE_AUTO:
-                mode_name = "AUTO";
-                break;
-
-            case MODE_MANUAL_ON:
-                mode_name = "MANUAL_ON";
-                break;
-
-            case MODE_MANUAL_OFF:
-                mode_name = "MANUAL_OFF";
-                break;
-
-            default:
-                mode_name = "UNKNOWN";
-                break;
-        }
-
-        int len = snprintf(
-            buffer,
-            sizeof(buffer),
-            "ADC:%u | PWM:%u | ALARM:%u | MODE:%s\r\n",
-            (unsigned int)latest_adc_value,
-            (unsigned int)latest_pwm_duty,
-            (unsigned int)alarm_state,
-            mode_name
-        );
-
-        if (len > 0 && len < sizeof(buffer))
-        {
-            HAL_UART_Transmit(
-                &huart1,
-                (uint8_t *)buffer,
-                (uint16_t)len,
-                500
-            );
-        }
 
         osDelay(1000);
     }

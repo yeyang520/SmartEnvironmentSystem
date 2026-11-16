@@ -47,6 +47,7 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
 osMessageQueueId_t SensorQueueHandle;
+osMessageQueueId_t CommandQueueHandle;
 /* USER CODE END Variables */
 
 /* Private function prototypes -----------------------------------------------*/

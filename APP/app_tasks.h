@@ -2,6 +2,7 @@
 #define APP_TASKS_H
 
 #include "cmsis_os2.h"
+#include "bsp_uart.h"
 
 
 /**
@@ -36,6 +37,7 @@ typedef enum
 
 /* 消息队列句柄 */
 extern osMessageQueueId_t SensorQueueHandle;
+extern osMessageQueueId_t CommandQueueHandle;
 
 extern volatile uint32_t sensor_count;
 extern volatile uint32_t control_count;

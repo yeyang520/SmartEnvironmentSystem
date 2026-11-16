@@ -20,7 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 /* USER CODE BEGIN Includes */
-
+#include "bsp_uart.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -246,9 +246,51 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* USER CODE BEGIN USART1_MspInit 1 */
+    /* ================= USART1 RX DMA 配置 ================= */
 
-    /* USER CODE END USART1_MspInit 1 */
+    /* 开启 DMA1 时钟 */
+    __HAL_RCC_DMA1_CLK_ENABLE();
+
+    /* 指定 DMA 通道 */
+    hdma_usart1_rx.Instance = DMA1_Channel5;
+
+    /* 数据传输方向：USART1 -> RAM */
+    hdma_usart1_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
+
+    /* 外设地址不递增 */
+    hdma_usart1_rx.Init.PeriphInc = DMA_PINC_DISABLE;
+
+    /* 内存地址递增 */
+    hdma_usart1_rx.Init.MemInc = DMA_MINC_ENABLE;
+
+    /* 外设数据宽度：8位 */
+    hdma_usart1_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+
+    /* 内存数据宽度：8位 */
+    hdma_usart1_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+
+    /* 循环模式 */
+    hdma_usart1_rx.Init.Mode = DMA_CIRCULAR;
+
+    /* DMA 优先级 */
+    hdma_usart1_rx.Init.Priority = DMA_PRIORITY_HIGH;
+
+    /* 初始化 DMA */
+    if (HAL_DMA_Init(&hdma_usart1_rx) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /* 将 DMA 句柄关联到 USART1 */
+    __HAL_LINKDMA(huart, hdmarx, hdma_usart1_rx);
+
+    /* DMA1 Channel5 中断 */
+    HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 6, 0);
+    HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
+
+    /* USART1 中断：用于 HAL UART 错误处理 */
+    HAL_NVIC_SetPriority(USART1_IRQn, 6, 0);
+    HAL_NVIC_EnableIRQ(USART1_IRQn);
 
   }
 

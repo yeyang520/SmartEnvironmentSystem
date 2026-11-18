@@ -81,13 +81,13 @@ osThreadId_t ControlTaskHandle;
 const osThreadAttr_t ControlTask_attributes = {
   .name = "ControlTask",
   .stack_size = 512,
-  .priority = (osPriority_t) osPriorityAboveNormal,
+  .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for UartTask */
 osThreadId_t UartTaskHandle;
 const osThreadAttr_t UartTask_attributes = {
   .name = "UartTask",
-  .stack_size = 1024,
+  .stack_size = 1536,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for KeyTask */
@@ -123,6 +123,13 @@ volatile uint32_t g_heap_min_free_at_error = 0;
 
 /* IWDG 看门狗句柄 */
 IWDG_HandleTypeDef hiwdg;
+
+/* ================= 系统复位原因记录 ================= *
+/* 保存启动时的 RCC 复位标志 */
+volatile uint32_t g_reset_flags_snapshot = 0;
+
+/* 是否由 IWDG 引起复位 */
+volatile uint8_t g_iwdg_reset_detected = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -208,7 +215,21 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
+  /* 保存启动时的复位标志 */
+  g_reset_flags_snapshot = RCC->CSR;
 
+  /* 判断是否为 IWDG 复位 */
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST) != RESET)
+  {
+      g_iwdg_reset_detected = 1;
+  }
+  else
+  {
+      g_iwdg_reset_detected = 0;
+  }
+
+  /* 清除复位标志，避免下次启动误判 */
+  __HAL_RCC_CLEAR_RESET_FLAGS();
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -320,6 +341,9 @@ int main(void)
 
   /* Start scheduler */
   osKernelStart();
+
+  // 点亮RUN灯
+  // HAL_GPIO_WritePin(GPIOB, LED_RUN_Pin, GPIO_PIN_SET);
 
   /* We should never get here as control is now taken by the scheduler */
 

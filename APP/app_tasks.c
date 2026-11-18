@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <stddef.h>
 
 #include "bsp_pwm.h"
 #include "bsp_uart.h"
@@ -82,6 +83,11 @@ volatile uint32_t g_key_heartbeat = 0;
  */
 volatile uint32_t g_task_health_fault_mask = 0;
 
+/* 备份寄存器有效标志 */
+#define APP_BACKUP_MAGIC    0xA55AU
+
+volatile uint32_t g_iwdg_feed_count = 0;
+
 /* 获取任务历史最小剩余栈空间，单位：Bytes */
 static uint32_t App_GetStackMinFreeBytes(osThreadId_t task_handle)
 {
@@ -94,6 +100,230 @@ static uint32_t App_GetStackMinFreeBytes(osThreadId_t task_handle)
         uxTaskGetStackHighWaterMark((TaskHandle_t)task_handle);
 
     return (uint32_t)stack_words * sizeof(StackType_t);
+}
+
+/* 开启备份寄存器访问 */
+static void App_Backup_EnableAccess(void)
+{
+    /* 开启 PWR 时钟 */
+    __HAL_RCC_PWR_CLK_ENABLE();
+
+    /* 开启 BKP 时钟 */
+    __HAL_RCC_BKP_CLK_ENABLE();
+
+    /* 允许访问备份域 */
+    PWR->CR |= PWR_CR_DBP;
+
+    /* 读取回写，确保访问使能生效 */
+    (void)PWR->CR;
+}
+
+/* 保存任务故障记录 */
+/* 保存任务故障记录 */
+void App_Backup_SaveTaskFault(uint32_t fault_mask)
+{
+    uint16_t mask;
+
+    /* 只保留低4位 */
+    mask = (uint16_t)(fault_mask & 0x000FU);
+
+    App_Backup_EnableAccess();
+
+    /* 先清除有效标志 */
+    BKP->DR1 = 0;
+
+    /* 写入故障掩码 */
+    BKP->DR2 = mask;
+
+    /* 写入反码校验 */
+    BKP->DR3 = (uint16_t)(mask ^ 0xFFFFU);
+
+    /* 最后写入有效标志 */
+    BKP->DR1 = APP_BACKUP_MAGIC;
+
+    /* 关闭备份域写访问 */
+    PWR->CR &= ~PWR_CR_DBP;
+}
+
+/* 读取任务故障记录 */
+uint8_t App_Backup_ReadTaskFault(uint32_t *fault_mask)
+{
+    uint16_t magic;
+    uint16_t mask;
+    uint16_t check;
+
+    if (fault_mask == NULL)
+    {
+        return 0U;
+    }
+
+    __HAL_RCC_PWR_CLK_ENABLE();
+    __HAL_RCC_BKP_CLK_ENABLE();
+
+    magic = BKP->DR1;
+    mask = BKP->DR2;
+    check = BKP->DR3;
+
+    /* 检查有效标志和数据完整性 */
+    if (magic != APP_BACKUP_MAGIC ||
+        mask > 0x000FU ||
+        check != (uint16_t)(mask ^ 0xFFFFU))
+    {
+        return 0U;
+    }
+
+    *fault_mask = (uint32_t)mask;
+
+    return 1U;
+}
+
+
+/* 清除任务故障记录 */
+void App_Backup_ClearTaskFault(void)
+{
+    App_Backup_EnableAccess();
+
+    BKP->DR1 = 0;
+    BKP->DR2 = 0;
+    BKP->DR3 = 0;
+
+    PWR->CR &= ~PWR_CR_DBP;
+}
+
+/* ================= 系统启动复位报告 ================= */
+/**
+看门狗复位
+软件主动复位
+外部复位引脚修复
+上电复位
+*/
+static void App_UartReportResetReason(void)
+{
+    uint32_t flags = g_reset_flags_snapshot;
+    uint8_t found = 0;
+
+    static const char header[] =
+        "\r\n========== SYSTEM BOOT ==========\r\n";
+
+    HAL_UART_Transmit(
+        &huart1,
+        (uint8_t *)header,
+        sizeof(header) - 1,
+        500
+    );
+
+    /* 独立看门狗复位 */
+    if (flags & RCC_CSR_IWDGRSTF)
+    {
+        static const char msg[] = "RESET REASON: IWDG\r\n";
+
+        HAL_UART_Transmit(
+            &huart1,
+            (uint8_t *)msg,
+            sizeof(msg) - 1,
+            500
+        );
+
+        found = 1;
+    }
+
+    /* 窗口看门狗复位 */
+    if (flags & RCC_CSR_WWDGRSTF)
+    {
+        static const char msg[] = "RESET REASON: WWDG\r\n";
+
+        HAL_UART_Transmit(
+            &huart1,
+            (uint8_t *)msg,
+            sizeof(msg) - 1,
+            500
+        );
+
+        found = 1;
+    }
+
+    /* 软件复位 */
+    if (flags & RCC_CSR_SFTRSTF)
+    {
+        static const char msg[] = "RESET REASON: SOFTWARE\r\n";
+
+        HAL_UART_Transmit(
+            &huart1,
+            (uint8_t *)msg,
+            sizeof(msg) - 1,
+            500
+        );
+
+        found = 1;
+    }
+
+    /* 外部复位 */
+    if (flags & RCC_CSR_PINRSTF)
+    {
+        static const char msg[] = "RESET FLAG: PIN RESET\r\n";
+
+        HAL_UART_Transmit(
+            &huart1,
+            (uint8_t *)msg,
+            sizeof(msg) - 1,
+            500
+        );
+
+        found = 1;
+    }
+
+    /* 上电或掉电复位 */
+    if (flags & RCC_CSR_PORRSTF)
+    {
+        static const char msg[] = "RESET FLAG: POWER RESET\r\n";
+
+        HAL_UART_Transmit(
+            &huart1,
+            (uint8_t *)msg,
+            sizeof(msg) - 1,
+            500
+        );
+
+        found = 1;
+    }
+
+    /* 低功耗复位 */
+    if (flags & RCC_CSR_LPWRRSTF)
+    {
+        static const char msg[] = "RESET REASON: LOW POWER\r\n";
+
+        HAL_UART_Transmit(
+            &huart1,
+            (uint8_t *)msg,
+            sizeof(msg) - 1,
+            500
+        );
+
+        found = 1;
+    }
+
+    if (found == 0)
+    {
+        static const char msg[] =
+            "RESET REASON: UNKNOWN\r\n";
+
+        HAL_UART_Transmit(
+            &huart1,
+            (uint8_t *)msg,
+            sizeof(msg) - 1,
+            500
+        );
+    }
+
+    static const char footer[] =
+        "=================================\r\n";
+
+    HAL_UART_Transmit(
+        &huart1,
+        (uint8_t *)footer,
+        sizeof(footer) - 1,
+        500
+    );
 }
 
 /* Sensor Task */
@@ -139,7 +369,6 @@ void App_SensorTask(void *argument)
 }
 
 /* Control Task */
-
 void App_ControlTask(void *argument)
 {
     SensorData_t received_data;
@@ -158,7 +387,7 @@ void App_ControlTask(void *argument)
                    CommandQueueHandle,
                    &received_command,
                    NULL,
-                   0
+                   10
                ) == osOK)
         {
             switch (received_command.type)
@@ -302,6 +531,9 @@ void App_UartTask(void *argument)
     }
 
     AppProtocol_Init();
+
+    /* 输出系统上一次复位原因 */
+    App_UartReportResetReason();
 
     for (;;)
     {
@@ -551,8 +783,6 @@ void App_KeyTask(void *argument)
 }
 
 /* Monitor Task */
-
-/* Monitor Task */
 void App_MonitorTask(void *argument)
 {
     /* 保存上一次的心跳值 */
@@ -629,10 +859,16 @@ void App_MonitorTask(void *argument)
             /* 所有任务正常才允许喂狗 */
             if (g_task_health_fault_mask == 0)
             {
+                g_iwdg_feed_count++;
                 App_IWDG_Refresh();
             }
+            else
+            {
+                /* 保存故障任务信息 */
+                App_Backup_SaveTaskFault(g_task_health_fault_mask);
+                /* 不再喂狗，等待 IWDG 自动复位 */
+            }
         }
-
         osDelay(1000);
     }
 }

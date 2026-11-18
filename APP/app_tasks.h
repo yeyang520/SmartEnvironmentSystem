@@ -54,10 +54,21 @@ extern volatile uint16_t latest_pwm_duty;
 // 当前报警状态
 extern volatile uint8_t alarm_state;
 
+/* main.c 中定义的系统复位信息 */
+extern volatile uint32_t g_reset_flags_snapshot;
+extern volatile uint8_t g_iwdg_reset_detected;
+
 void App_SensorTask(void *argument);
 void App_ControlTask(void *argument);
 void App_UartTask(void *argument);
 void App_KeyTask(void *argument);
 void App_MonitorTask(void *argument);
+
+/* 备份寄存器故障记录接口 */
+void App_Backup_SaveTaskFault(uint32_t fault_mask);
+
+uint8_t App_Backup_ReadTaskFault(uint32_t *fault_mask);
+
+void App_Backup_ClearTaskFault(void);
 
 #endif

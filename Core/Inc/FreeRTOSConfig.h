@@ -149,6 +149,14 @@ standard names. */
 
 /* USER CODE BEGIN Defines */
 /* Section where parameter definitions can be added (for instance, to override default ones in FreeRTOS.h) */
+/* 开启任务栈溢出检测 
+  1: 检测指针是否越界
+  2: 额外检查栈底填充值是否被破坏
+*/
+#define configCHECK_FOR_STACK_OVERFLOW 2
+
+/* 动态内存分配失败检测 */
+#define configUSE_MALLOC_FAILED_HOOK 1
 /* USER CODE END Defines */
 
 #endif /* FREERTOS_CONFIG_H */

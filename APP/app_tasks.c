@@ -8,6 +8,9 @@
 #include "bsp_uart.h"
 #include "app_protocol.h"
 
+#include "FreeRTOS.h"
+#include "task.h"
+
 /* 任务运行计数器 */
 volatile uint32_t sensor_count = 0;
 volatile uint32_t control_count = 0;
@@ -31,11 +34,40 @@ volatile uint32_t uart_command_error_count = 0;
 // uart1
 extern UART_HandleTypeDef huart1;
 
+/* 外部任务句柄，定义在 main.c */
+extern osThreadId_t SensorTaskHandle;
+extern osThreadId_t ControlTaskHandle;
+extern osThreadId_t UartTaskHandle;
+extern osThreadId_t KeyTaskHandle;
+extern osThreadId_t MonitorTaskHandle;
+
 volatile AppCommandType_t latest_command_type = CMD_NONE;
 volatile uint32_t latest_command_value = 0;
 
 volatile uint16_t alarm_on_threshold = 3000;
 volatile uint16_t alarm_off_threshold = 2900;
+
+/* 保存发生栈溢出的任务信息 */
+TaskHandle_t volatile g_overflow_task = NULL;
+
+char *volatile g_overflow_task_name=NULL;
+
+/* 动态内存分配失败标志 */
+volatile BaseType_t g_malloc_failed = pdFALSE;
+
+/* 获取任务历史最小剩余栈空间，单位：Bytes */
+static uint32_t App_GetStackMinFreeBytes(osThreadId_t task_handle)
+{
+    if (task_handle == NULL)
+    {
+        return 0;
+    }
+
+    UBaseType_t stack_words =
+        uxTaskGetStackHighWaterMark((TaskHandle_t)task_handle);
+
+    return (uint32_t)stack_words * sizeof(StackType_t);
+}
 
 /* Sensor Task */
 void App_SensorTask(void *argument)
@@ -215,7 +247,6 @@ void App_ControlTask(void *argument)
 }
 
 /* UART Task */
-
 void App_UartTask(void *argument)
 {
     uint8_t rx_data[32];
@@ -323,19 +354,54 @@ void App_UartTask(void *argument)
                         }
                         else if (parsed_command.type == CMD_STATUS)
                         {
-                            char reply[160];
+                            /* 获取五个任务的历史最小剩余栈空间 */
+                            uint32_t sensor_stack =
+                                App_GetStackMinFreeBytes(SensorTaskHandle);
+
+                            uint32_t control_stack =
+                                App_GetStackMinFreeBytes(ControlTaskHandle);
+
+                            uint32_t uart_stack =
+                                App_GetStackMinFreeBytes(UartTaskHandle);
+
+                            uint32_t key_stack =
+                                App_GetStackMinFreeBytes(KeyTaskHandle);
+
+                            uint32_t monitor_stack =
+                                App_GetStackMinFreeBytes(MonitorTaskHandle);
+
+                            /* 获取当前剩余 Heap */
+                            size_t heap_free_bytes = xPortGetFreeHeapSize();
+
+                            /* 获取历史最小剩余 Heap */
+                            size_t heap_min_free_bytes =
+                                xPortGetMinimumEverFreeHeapSize();
+
+                            static char reply[256];
 
                             int reply_len = snprintf(
                                 reply,
                                 sizeof(reply),
-                                "ADC:%u PWM:%u MODE:%d ALARM:%u\r\n",
+
+                                "ADC:%u PWM:%u MODE:%d ALARM:%u\r\n"
+                                "STACK_MIN_FREE(B): S=%lu C=%lu U=%lu K=%lu M=%lu\r\n"
+                                "HEAP_FREE(B): %lu HEAP_MIN_FREE(B): %lu\r\n",
+
                                 (unsigned int)latest_adc_value,
                                 (unsigned int)latest_pwm_duty,
                                 (int)system_mode,
-                                (unsigned int)alarm_state
+                                (unsigned int)alarm_state,
+
+                                (unsigned long)sensor_stack,
+                                (unsigned long)control_stack,
+                                (unsigned long)uart_stack,
+                                (unsigned long)key_stack,
+                                (unsigned long)monitor_stack,
+                                (unsigned long)heap_free_bytes,
+                                (unsigned long)heap_min_free_bytes
                             );
 
-                            if (reply_len > 0 && reply_len < sizeof(reply))
+                            if (reply_len > 0 && reply_len < (int)sizeof(reply))
                             {
                                 HAL_UART_Transmit(
                                     &huart1,
@@ -455,5 +521,37 @@ void App_MonitorTask(void *argument)
         monitor_count++;
 
         osDelay(1000);
+    }
+}
+
+/* FreeRTOS 栈溢出钩子 */
+void vApplicationStackOverflowHook(
+    TaskHandle_t xTask,
+    char *pcTaskName)
+{
+    /* 保存异常任务信息 */
+    g_overflow_task = xTask;
+    g_overflow_task_name = pcTaskName;
+
+    /* 关闭中断 */
+    __disable_irq();
+
+    /* 停止系统，等待调试 */
+    for (;;)
+    {
+        __NOP();
+    }
+}
+
+/* FreeRTOS 动态内存分配失败钩子 */
+void vApplicationMallocFailedHook(void)
+{
+    /* 记录内存分配失败 */
+    g_malloc_failed = pdTRUE;
+
+    /* 停止系统，等待调试器检查 */
+    for (;;)
+    {
+        __NOP();
     }
 }

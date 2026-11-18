@@ -28,11 +28,27 @@
 #include "app_tasks.h"
 #include "bsp_pwm.h"
 #include "app_protocol.h"
-
+#include "FreeRTOS.h"
+#include "portable.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+// 故障记录，那个有问题
+typedef enum
+{
+    APP_INIT_OK = 0,
+
+    APP_INIT_ERR_SENSOR_QUEUE,
+    APP_INIT_ERR_COMMAND_QUEUE,
+
+    APP_INIT_ERR_SENSOR_TASK,
+    APP_INIT_ERR_CONTROL_TASK,
+    APP_INIT_ERR_UART_TASK,
+    APP_INIT_ERR_KEY_TASK,
+    APP_INIT_ERR_MONITOR_TASK
+
+} AppInitError_t;
 
 /* USER CODE END PTD */
 
@@ -97,6 +113,13 @@ extern volatile uint32_t control_count;
 extern volatile uint32_t uart_count;
 extern volatile uint32_t key_count;
 extern volatile uint32_t monitor_count;
+
+/* 初始化故障记录 */
+volatile AppInitError_t g_app_init_error = APP_INIT_OK;
+
+/* 故障发生时的 Heap 信息 */
+volatile uint32_t g_heap_free_at_error = 0;
+volatile uint32_t g_heap_min_free_at_error = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -118,6 +141,22 @@ void Monitor_Task(void *argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+// 记录故障函数
+static void App_RecordInitFault(AppInitError_t error)
+{
+    /* 记录故障类型 */
+    g_app_init_error = error;
+
+    /* 记录故障发生时的 Heap */
+    g_heap_free_at_error =
+        (uint32_t)xPortGetFreeHeapSize();
+
+    g_heap_min_free_at_error =
+        (uint32_t)xPortGetMinimumEverFreeHeapSize();
+
+    /* 停止系统 */
+    Error_Handler();
+}
 
 /* USER CODE END 0 */
 
@@ -185,7 +224,7 @@ int main(void)
   /* 检查消息队列是否创建成功 */
   if (SensorQueueHandle == NULL)
   {
-      Error_Handler();
+      App_RecordInitFault(APP_INIT_ERR_SENSOR_QUEUE);
   }
   /* 创建串口命令消息队列 */
   CommandQueueHandle = osMessageQueueNew(
@@ -196,7 +235,7 @@ int main(void)
   /* 检查命令队列是否创建成功 */
   if (CommandQueueHandle == NULL)
   {
-      Error_Handler();
+      App_RecordInitFault(APP_INIT_ERR_COMMAND_QUEUE);
   }
 
   /* USER CODE END RTOS_QUEUES */
@@ -204,22 +243,39 @@ int main(void)
   /* Create the thread(s) */
   /* creation of SensorTask */
   SensorTaskHandle = osThreadNew(Sensor_Task, NULL, &SensorTask_attributes);
-
+  if(SensorTaskHandle == NULL)
+  {
+    App_RecordInitFault(APP_INIT_ERR_SENSOR_TASK);
+  }
+  
   /* creation of ControlTask */
   ControlTaskHandle = osThreadNew(Control_Task, NULL, &ControlTask_attributes);
+  if(ControlTaskHandle == NULL)
+  {
+    App_RecordInitFault(APP_INIT_ERR_CONTROL_TASK);
+  }
 
   /* creation of UartTask */
   UartTaskHandle = osThreadNew(Uart_Task, NULL, &UartTask_attributes);
+  if(UartTaskHandle == NULL)
+  {
+    App_RecordInitFault(APP_INIT_ERR_UART_TASK);
+  }
 
   /* creation of KeyTask */
   KeyTaskHandle = osThreadNew(Key_Task, NULL, &KeyTask_attributes);
+  if(KeyTaskHandle == NULL)
+  {
+    App_RecordInitFault(APP_INIT_ERR_KEY_TASK);
+  }
 
   /* creation of MonitorTask */
   MonitorTaskHandle = osThreadNew(Monitor_Task, NULL, &MonitorTask_attributes);
-
-  if(MonitorTaskHandle == NULL){
-    HAL_GPIO_WritePin(LED_RUN_GPIO_Port, LED_RUN_Pin, GPIO_PIN_SET);
+  if(MonitorTaskHandle == NULL)
+  {
+    App_RecordInitFault(APP_INIT_ERR_MONITOR_TASK);
   }
+  
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */

@@ -55,6 +55,33 @@ char *volatile g_overflow_task_name=NULL;
 /* 动态内存分配失败标志 */
 volatile BaseType_t g_malloc_failed = pdFALSE;
 
+/* ================= 任务心跳计数器 ================= */
+
+/* SensorTask 心跳 */
+volatile uint32_t g_sensor_heartbeat = 0;
+
+/* ControlTask 心跳 */
+volatile uint32_t g_control_heartbeat = 0;
+
+/* UartTask 心跳 */
+volatile uint32_t g_uart_heartbeat = 0;
+
+/* KeyTask 心跳 */
+volatile uint32_t g_key_heartbeat = 0;
+
+/* ================= 任务健康状态 ================= */
+
+/*
+ * 故障标志位：
+ * bit0：SensorTask 故障
+ * bit1：ControlTask 故障
+ * bit2：UartTask 故障
+ * bit3：KeyTask 故障
+ *
+ * 0：所有任务正常
+ */
+volatile uint32_t g_task_health_fault_mask = 0;
+
 /* 获取任务历史最小剩余栈空间，单位：Bytes */
 static uint32_t App_GetStackMinFreeBytes(osThreadId_t task_handle)
 {
@@ -103,6 +130,9 @@ void App_SensorTask(void *argument)
 
         // 停止ADC
         HAL_ADC_Stop(&hadc1);
+
+        // SensorTask心跳
+        g_sensor_heartbeat++;
 
         osDelay(100);
     }
@@ -159,6 +189,9 @@ void App_ControlTask(void *argument)
 
                 default:
                     break;
+
+                // 完成一条命令处理,心跳
+                g_control_heartbeat++;
             }
         }
 
@@ -243,6 +276,8 @@ void App_ControlTask(void *argument)
                 }
             }
         }
+        // 完成一轮控制任务循环
+        g_control_heartbeat++;
     }
 }
 
@@ -449,6 +484,8 @@ void App_UartTask(void *argument)
                 }
             }
         }
+        // uart心跳
+        g_uart_heartbeat++;
         osDelay(5);
     }
 }
@@ -507,18 +544,94 @@ void App_KeyTask(void *argument)
                 key_count++;
             }
         }
-
+        // KeyTask心跳
+        g_key_heartbeat++;
         osDelay(10);
     }
 }
 
 /* Monitor Task */
+
+/* Monitor Task */
 void App_MonitorTask(void *argument)
 {
+    /* 保存上一次的心跳值 */
+    static uint32_t last_sensor_heartbeat = 0;
+    static uint32_t last_control_heartbeat = 0;
+    static uint32_t last_uart_heartbeat = 0;
+    static uint32_t last_key_heartbeat = 0;
+
+    /* 首次检测标志 */
+    static uint8_t first_check = 1;
+
+    /* 当前心跳值 */
+    uint32_t current_sensor;
+    uint32_t current_control;
+    uint32_t current_uart;
+    uint32_t current_key;
 
     for (;;)
     {
         monitor_count++;
+
+        /* 第一次运行：记录初始心跳 */
+        if (first_check)
+        {
+            last_sensor_heartbeat = g_sensor_heartbeat;
+            last_control_heartbeat = g_control_heartbeat;
+            last_uart_heartbeat = g_uart_heartbeat;
+            last_key_heartbeat = g_key_heartbeat;
+
+            first_check = 0;
+
+            /* 建立初始基准后允许第一次喂狗 */
+            App_IWDG_Refresh();
+        }
+        /* 只有尚未发生故障时才继续检查 */
+        else if (g_task_health_fault_mask == 0)
+        {
+            /* 读取当前心跳 */
+            current_sensor = g_sensor_heartbeat;
+            current_control = g_control_heartbeat;
+            current_uart = g_uart_heartbeat;
+            current_key = g_key_heartbeat;
+
+            /* 检查 SensorTask */
+            if (current_sensor == last_sensor_heartbeat)
+            {
+                g_task_health_fault_mask |= (1U << 0);
+            }
+
+            /* 检查 ControlTask */
+            if (current_control == last_control_heartbeat)
+            {
+                g_task_health_fault_mask |= (1U << 1);
+            }
+
+            /* 检查 UartTask */
+            if (current_uart == last_uart_heartbeat)
+            {
+                g_task_health_fault_mask |= (1U << 2);
+            }
+
+            /* 检查 KeyTask */
+            if (current_key == last_key_heartbeat)
+            {
+                g_task_health_fault_mask |= (1U << 3);
+            }
+
+            /* 保存本次心跳，供下一轮比较 */
+            last_sensor_heartbeat = current_sensor;
+            last_control_heartbeat = current_control;
+            last_uart_heartbeat = current_uart;
+            last_key_heartbeat = current_key;
+
+            /* 所有任务正常才允许喂狗 */
+            if (g_task_health_fault_mask == 0)
+            {
+                App_IWDG_Refresh();
+            }
+        }
 
         osDelay(1000);
     }

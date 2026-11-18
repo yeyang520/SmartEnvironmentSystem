@@ -54,6 +54,9 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
 
+// 喂狗函数
+void App_IWDG_Refresh(void);
+
 /* USER CODE BEGIN EFP */
 
 /* USER CODE END EFP */

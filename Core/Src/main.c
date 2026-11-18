@@ -120,6 +120,9 @@ volatile AppInitError_t g_app_init_error = APP_INIT_OK;
 /* 故障发生时的 Heap 信息 */
 volatile uint32_t g_heap_free_at_error = 0;
 volatile uint32_t g_heap_min_free_at_error = 0;
+
+/* IWDG 看门狗句柄 */
+IWDG_HandleTypeDef hiwdg;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -158,6 +161,34 @@ static void App_RecordInitFault(AppInitError_t error)
     Error_Handler();
 }
 
+/* IWDG 初始化函数 
+  IWDG使用内部LSI时钟，40khz
+  超时时间 = （（Reload + 1） * Prescaler） / F_lsi
+  （3125 * 64） / 40000 = 5s
+*/
+void App_IWDG_Init(void)
+{
+    /* 选择独立看门狗 */
+    hiwdg.Instance = IWDG;
+
+    /* 设置预分频系数 */
+    hiwdg.Init.Prescaler = IWDG_PRESCALER_64;
+
+    /* 设置重装载值 */
+    hiwdg.Init.Reload = 3124;
+
+    /* 初始化并启动看门狗 */
+    if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+
+/* IWDG 喂狗函数 */
+void App_IWDG_Refresh(void)
+{
+    HAL_IWDG_Refresh(&hiwdg);
+}
 /* USER CODE END 0 */
 
 /**
@@ -283,6 +314,9 @@ int main(void)
   /* USER CODE BEGIN RTOS_EVENTS */
   /* add events, ... */
   /* USER CODE END RTOS_EVENTS */
+
+  // 启动独立看门狗
+  App_IWDG_Init();
 
   /* Start scheduler */
   osKernelStart();
